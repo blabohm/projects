@@ -1,174 +1,168 @@
-
 ---
-title: "osm_streets_download_and_check"
+title: "osm_street_download_and_check"
 author: "Benjamin Labohm"
 date: "`r Sys.Date()`"
 output: html_document
 ---
 
 ## Packages
-Loading required packages
 
-```{r dirs and packages, echo=FALSE}
-# Directories
-projectDir <- "D:/LandOeko/AgeingWell/"
-dataDir <- paste0(projectDir, "data/")
-libDir <- paste0(projectDir, "lib/")
+```{r setup, echo=FALSE, message=FALSE}
+# Load Required Libraries and Define Directories
 
-# Package loading
-req_pkg = c("dplyr", "tibble", "tidyr", "sf", "osmdata")
-req_pkg_install <- setdiff(req_pkg, rownames(installed.packages(lib = libDir)))
-lapply(req_pkg_install, install.packages, character.only = TRUE, lib = libDir)
-lapply(req_pkg, require, character.only = TRUE, lib = libDir)
+# Define directories
+project_dir <- "D:/LandOeko/AgeingWell/"
+data_dir <- file.path(project_dir, "data")
+lib_dir <- file.path(project_dir, "lib")
 
-# load functions
-getwd() %>%
-    paste0("/osm_download_funs.R") %>%
-    source()
-getwd() %>%
-    paste0("/network_cleaning_funs.R") %>%
-    source()
+# Required packages
+required_pkgs <- c("dplyr", "tibble", "tidyr", "sf", "osmdata")
+
+# Install missing packages
+to_install <- setdiff(required_pkgs, rownames(installed.packages(lib.loc = lib_dir)))
+lapply(to_install, install.packages, lib = lib_dir, character.only = TRUE)
+
+# Load packages
+invisible(lapply(required_pkgs, require, lib.loc = lib_dir, character.only = TRUE))
+
+# Load custom functions
+source(file.path(getwd(), "osm_download_funs.R"))
+source(file.path(getwd(), "network_cleaning_funs.R"))
+
 ```
 
 ## Data
-Load input data
-- target LOR
-- target OSM keys
 
-```{r data input}
-# load LOR polygons
-lor_path <- paste0(dataDir, "lor_target_plr.gpkg")
+```{r data, echo=FALSE, message=FALSE}
+# Load LOR polygons
+lor_path <- file.path(data_dir, "lor_target_plr.gpkg")
 lor_polygons <- read_sf(lor_path)
-plot(lor_polygons$geom)  
-
+plot(lor_polygons$geom)
 
 ```
 
 ## Download OSM
-Download OSM data in target LOR
-- by LOR
-- by key
-- save raw data as osm_raw.gpkg
 
-```{r download OSM}
-# by LOR
-# i <- 1
-
-# Path for saving raw OSM data
-# distance parameter
+```{r download, echo=FALSE, message=FALSE}
+# Set distance and output directory
 d <- 1000
-osm_raw_dir <- paste0(dataDir, "osm_streets_raw/")
+osm_raw_dir <- file.path(data_dir, "osm_streets_raw")
 clean_dir_create(osm_raw_dir)
 
-for (i in 1:nrow(lor_polygons)) {
-
-  target_lor <- lor_polygons[i,]
+# Download OSM street data by LOR
+for (i in seq_len(nrow(lor_polygons))) {
+  target_lor <- lor_polygons[i, ]
+  osm_raw_path <- file.path(osm_raw_dir, paste0(target_lor$PLR_NAME, ".gpkg"))
   
-  osm_raw_path <- paste0(osm_raw_dir, target_lor$PLR_NAME, ".gpkg")
   osm_data_tmp <- OSM_downloader(loc = target_lor, key = "highway", d = d)
+  
   osm_data_tmp$osm_lines %>%
     select(matches("^highway$|^surface$|^smoothness$|^sidewalk$")) %>%
-    #na.omit() %>%
-    #rename(value = 1) %>%
-    #mutate("key" = key) %>%
     write_sf(osm_raw_path, append = FALSE)
-    
 }
 
 ```
 
-## Filter OSM
-- filter for values
-- save filtered data as osm_clean.gpkg
+## Filter OSM (optional / commented)
 
-```{r inspect OSM}
-# # list files in osm raw directory
+```{r filter, echo=FALSE, message=FALSE}
+# Spatial filtering with buffer
+
 # osm_raw_paths <- list.files(osm_raw_dir, full.names = TRUE)
-# osm_clean_dir <- paste0(dataDir, "osm_streets_spat_filter/")
+# osm_clean_dir <- file.path(data_dir, "osm_streets_spat_filter")
 # clean_dir_create(osm_clean_dir)
-# 
-# # filter files spatially and by values
-# # lor_name <- lor_polygons$BZR_NAME[1]
+
 # for (lor_name in lor_polygons$PLR_NAME) {
-#   
 #   lor_polygon <- filter(lor_polygons, PLR_NAME == lor_name)
 #   grep(lor_name, osm_raw_paths, value = TRUE) %>%
-#     read_sf() %>% 
-#     st_transform(st_crs(lor_polygon)) %>% 
-#     st_filter(lor_polygon) %>% 
-#     #filter(value %in% target_values) %>% 
-#     write_sf(paste0(osm_clean_dir, lor_name, ".gpkg"), overwrite = TRUE)
+#     read_sf() %>%
+#     st_transform(st_crs(lor_polygon)) %>%
+#     st_filter(lor_polygon) %>%
+#     write_sf(file.path(osm_clean_dir, paste0(lor_name, ".gpkg")), overwrite = TRUE)
 # }
 
 ```
 
-## Test
-Inspect OSM data for completeness 
-- how many 'highways' have smoothness / surface params?
-- [https://dashboard.ohsome.org]
+## Test: Inspect Completeness
 
-```{r spat filter OSM}
-# retrieve all OSM keys in study area
+```{r inspect, echo=FALSE, message=FALSE}
+# Read all OSM raw street data
 osm_raw_paths <- list.files(osm_raw_dir, full.names = TRUE)
 
-osm_streets_sf <- osm_raw_paths[1] %>% 
-  read_sf() 
-for (osm_sf_path in osm_raw_paths[2:length(osm_raw_paths)]) {
-  osm_streets_sf <- osm_sf_path %>% 
-    read_sf() %>% 
-    bind_rows(osm_streets_sf)
+osm_streets_sf <- read_sf(osm_raw_paths[1])
+for (path in osm_raw_paths[-1]) {
+  osm_streets_sf <- bind_rows(osm_streets_sf, read_sf(path))
 }
 
-# classify OSM data into groups with osm key df
+# Save combined street data
 osm_streets_sf %>%
-  st_transform(25833) %>% 
-  write_sf(paste0(dataDir, "osm_streets_raw.gpkg"), append = FALSE)
-```
+  st_transform(25833) %>%
+  write_sf(file.path(data_dir, "osm_streets_raw.gpkg"), append = FALSE)
 
-
-```{r percentage OSM}
+# Calculate proportion of streets with surface/smoothness tags
 osm_streets_sf$street_length <- st_length(osm_streets_sf$geom)
-n <- sum(osm_streets_sf$street_length)
-n_smoothness <- osm_streets_sf %>%
+total_length <- sum(osm_streets_sf$street_length)
+
+length_smoothness <- osm_streets_sf %>%
   select(smoothness, street_length) %>%
-  na.omit()
-n_surface <- osm_streets_sf %>%
+  na.omit() %>%
+  summarise(length = sum(street_length)) %>%
+  pull(length)
+
+length_surface <- osm_streets_sf %>%
   select(surface, street_length) %>%
-  na.omit()
+  na.omit() %>%
+  summarise(length = sum(street_length)) %>%
+  pull(length)
 
-sum(n_smoothness$street_length) / n * 100
-sum(n_surface$street_length) / n * 100
+# Print percentages
+(length_smoothness / total_length) * 100
+(length_surface / total_length) * 100
+
+
+# Spatial join and aggregation
+osm_address_join <- st_join(osm_building_sf_filtered, address_sf)
+
+osm_address_join %>%
+  filter(!is.na(street_name)) %>%
+  mutate(address = paste(street_name, house_nr, house_nr_suffix)) %>%
+  group_by(address) %>%
+  summarise(geom = st_union(geom), .groups = "drop") %>%
+  write_sf(file.path(data_dir, "_osm_residential_buildings_addresses.gpkg"), append = FALSE)
 
 ```
 
+## Clean Street Network
 
-
-```{r clean Network}
+```{r inspect, echo=FALSE, message=FALSE}
 to_crs <- 25833
-osm_streets_raw_dir <- paste0(dataDir, "osm_streets_raw.gpkg")
+osm_streets_raw_path <- file.path(data_dir, "osm_streets_raw.gpkg")
 
-osm_street_data <- read_sf(osm_streets_raw_dir) %>% 
-  st_point_on_surface() %>% 
-  st_buffer(.1)
+# Generate spatial index
+osm_street_data <- read_sf(osm_streets_raw_path) %>%
+  st_point_on_surface() %>%
+  st_buffer(0.1)
 
+# Clean network: loop through each LOR geometry
 lor_wkt <- st_as_text(st_buffer(lor_polygons$geom[1], d))
-osm_target_streets <- read_sf(osm_streets_raw_dir, 
-                              wkt_filter = lor_wkt)
+osm_target_streets <- read_sf(osm_streets_raw_path, wkt_filter = lor_wkt)
 osm_network_clean <- networkCleaner(osm_target_streets, crs = to_crs)
-  
-for (target_lor in lor_polygons$geom[2:nrow(lor_polygons)]) {
 
-    lor_wkt <- st_as_text(st_buffer(target_lor, d))
-  osm_target_streets <- read_sf(osm_streets_raw_dir, 
-                                wkt_filter = lor_wkt)
-  osm_target_streets_clean <- networkCleaner(osm_target_streets, crs = to_crs)
-  osm_network_clean <- bind_rows(osm_network_clean, osm_target_streets_clean)
-
+for (target_geom in lor_polygons$geom[-1]) {
+  lor_wkt <- st_as_text(st_buffer(target_geom, d))
+  osm_target_streets <- read_sf(osm_streets_raw_path, wkt_filter = lor_wkt)
+  osm_clean_tmp <- networkCleaner(osm_target_streets, crs = to_crs)
+  osm_network_clean <- bind_rows(osm_network_clean, osm_clean_tmp)
 }
-#osm_network_clean
 
-st_join(osm_network_clean, osm_street_data) %>% 
-  filter(., st_is_valid(st_geometry(.)),
-         !st_is_empty(st_geometry(.))) %>% 
-  write_sf(paste0(dataDir, "_osm_network_clean.gpkg"), append = FALSE)
+# Join cleaned network with original attributes and write output
+osm_network_clean %>%
+  st_join(osm_street_data) %>%
+  filter(st_is_valid(geometry), !st_is_empty(geometry)) %>%
+  write_sf(file.path(data_dir, "_osm_network_clean.gpkg"), append = FALSE)
+
 ```
+
+
+
+

@@ -1,0 +1,227 @@
+---
+title: "walkability tool"
+author: "Benjamin Labohm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# Directories
+projectDir <- "D:/seafiles_new/Mycloud/AgeingWell_data/"
+dataDir <- paste0(projectDir, "data/")
+output_folder <- paste0(dataDir, "/output_neighborhood_data/")
+libDir <- paste0(projectDir, "lib/")
+
+# load functions
+source(paste0(getwd(), "/walkability_tool_funs.R"))
+
+# (Install and) load required packages in / from lib directory
+req_pkg = c("sfnetworks", "lwgeom", "terra", "sf", 
+            "tidygraph", "tidyr", "dplyr")
+safe_load(package_list = req_pkg, library_dir = libDir)
+```
+
+## Get paths to input files
+
+```{r get paths}
+raster_input <- list.files(paste0(dataDir, "/raster_input"), full.names = TRUE)
+vector_input <- list.files(paste0(dataDir, "/vector_input"), full.names = TRUE)
+```
+
+## Snap to network
+
+```{r create neighborhood data set, message=FALSE, warning=FALSE}
+# Create output directory if it doesnt exist
+clean_dir_create(output_folder)
+
+# Open the File containing LOR
+lor_sf <- read_sf(vector_input[grepl("lor", vector_input)])
+
+# Walking distances
+distances <- seq(from = 100, to = 1000, by = 100)
+max_d <- max(distances) + 100
+
+# Helper functions
+summarize_raster_vars <- function(edge_info_df, edge_paths, raster_vars) {
+  out <- list()
+  for (var in raster_vars) {
+    values <- sapply(edge_paths, function(x) sum(edge_info_df[[var]][x], na.rm = TRUE))
+    out[[paste0("avg_", var)]] <- mean(values, na.rm = TRUE)
+    out[[paste0("sum_", var)]] <- sum(values, na.rm = TRUE)
+  }
+  return(out)
+}
+
+walk_and_extract <- function(build_idx, network, edge_info_df, poi_entries, net_cost,
+                              np_build_network, distances, raster_vars) {
+  results <- list()
+  for (d in distances) {
+    in_dist_ids <- which(net_cost[build_idx, ] <= d)
+    if (length(in_dist_ids) == 0) next
+
+    edge_paths <- st_network_paths(x = network, 
+                                   from = np_build_network[build_idx,],
+                                   to = poi_entries$geom[in_dist_ids]) %>%
+      pull(edge_paths)
+    if (length(edge_paths) == 0) next
+
+    tmp <- tibble(Dimension = poi_entries$Dimension[in_dist_ids], edge_paths) %>%
+      mutate(
+        net_dist = sapply(edge_paths, function(x) sum(edge_info_df$weight[x], na.rm = TRUE)),
+        local_significance = sapply(edge_paths, function(x) sum(edge_info_df$ls[x], na.rm = TRUE))
+      )
+
+    raster_summaries <- lapply(1:length(edge_paths), function(i) {
+      sapply(raster_vars, function(var) sum(edge_info_df[[var]][edge_paths[[i]]], na.rm = TRUE))
+    })
+    raster_df <- as.data.frame(do.call(rbind, raster_summaries))
+    colnames(raster_df) <- raster_vars
+    tmp <- bind_cols(tmp, raster_df)
+
+    summarized <- tmp %>%
+      group_by(Dimension) %>%
+      summarise(
+        avg_net_dist = mean(net_dist, na.rm = TRUE),
+        min_net_dist = min(net_dist, na.rm = TRUE),
+        quantity = n(),
+        avg_local_significance = mean(local_significance, na.rm = TRUE),
+        max_local_significance = max(local_significance, na.rm = TRUE),
+        across(all_of(raster_vars), list(avg = ~mean(.x, na.rm = TRUE)), .names = "avg_{.col}")
+      ) %>%
+      mutate(address = np_build_network$address[build_idx], distance = d)
+
+    results[[as.character(d)]] <- summarized
+  }
+  return(results)
+}
+
+# Loop over LORs
+for (j in 1:nrow(lor_sf)) {
+  buildings <- vect_input_wkt(vector_input[grepl("build", vector_input)],
+                              st_as_text(lor_sf$geom[j,]))
+
+  lor_buff <- st_as_text(st_buffer(lor_sf$geom[j,], max_d))
+  osm_pois <- vect_input_wkt(vector_input[grepl("poi", vector_input)], lor_buff)
+  osm_network <- vect_input_wkt(vector_input[grepl("network", vector_input)], lor_buff)
+  local_significance <- vect_input_wkt(vector_input[grepl("local", vector_input)], lor_buff) %>% st_buffer(1)
+
+  # Raster data
+  raster_names <- gsub(".*/|\\.tif", "", raster_input)
+  raster_data <- rast_input(raster_input, osm_network) %>% st_drop_geometry()
+  colnames(raster_data) <- raster_names
+
+  osm_sf_network <- osm_network %>%
+    bind_cols(raster_data) %>%
+    st_join(local_significance) %>%
+    make_sf_network()
+
+  edge_info_df <- osm_sf_network %>% activate("edges") %>% st_as_sf()
+
+  nearest_id <- st_nearest_feature(buildings, osm_network)
+  np_build_network <- st_nearest_points(buildings, osm_network$geom[nearest_id], pairwise = TRUE) %>%
+    st_cast("POINT") %>% st_as_sf() %>% rename(geom = x) %>%
+    slice(seq(2, nrow(.), 2)) %>%
+    bind_cols(st_drop_geometry(buildings))
+
+  poi_entries <- osm_pois %>%
+    blender(osm_sf_network, .) %>%
+    activate("nodes") %>% st_as_sf() %>%
+    filter(!is.na(Dimension))
+
+  net_cost <- st_network_cost(osm_sf_network, np_build_network, poi_entries)
+
+  final_results <- list()
+  for (i in seq_len(nrow(np_build_network))) {
+    res <- walk_and_extract(i, osm_sf_network, edge_info_df, poi_entries, net_cost,
+                            np_build_network, distances, raster_names)
+    final_results[[i]] <- bind_rows(res)
+  }
+
+  all_data <- bind_rows(final_results) %>%
+    pivot_wider(id_cols = address, names_from = Dimension,
+                values_from = -c(address, Dimension)) %>%
+    right_join(buildings)
+
+  for (d in distances) {
+    output_file <- paste0(output_folder, "/neighborhood_data_",
+                          lor_sf$PLR_NAME[j], "_", d, "m.gpkg")
+    write_sf(filter(all_data, distance == d), output_file, append = FALSE)
+  }
+}
+```
+
+## Post-processing and export
+
+```{r create neighborhood data set, message=FALSE, warning=FALSE}
+# Define distances again if needed
+distances <- seq(100, 1000, by = 100)
+
+# List all neighborhood data files
+nh_data_files <- list.files(output_folder, full.names = TRUE)
+
+# Combine partial neighborhood data files by distance
+for (d in distances) {
+  filtered_files <- nh_data_files[grepl(paste0("[^a]_", d, "m"), nh_data_files)]
+  output_file_name <- file.path(output_folder, paste0("neighborhood_data_", d, "m.gpkg"))
+  
+  if (file.exists(output_file_name)) {
+    unlink(output_file_name, force = TRUE)
+  }
+  
+  nh_data_tmp <- filtered_files %>%
+    lapply(read_sf) %>%
+    bind_rows()
+  
+  write_sf(nh_data_tmp, output_file_name, append = FALSE)
+}
+
+# Combine full neighborhood datasets (those marked with 'a_')
+nh_data_files_dist <- list.files(output_folder, full.names = TRUE, pattern = "a_\\d*m")
+output_file_name_complete <- file.path(output_folder, "neighborhood_data_complete.gpkg")
+
+if (file.exists(output_file_name_complete)) {
+  unlink(output_file_name_complete, force = TRUE)
+}
+
+nh_data_complete <- nh_data_files_dist %>%
+  setNames(nm = .) %>%
+  imap_dfr(~ read_sf(.x) %>%
+             mutate(network_distance = gsub(".*data_|.gpkg", "", .x)))
+
+write_sf(nh_data_complete, output_file_name_complete, append = FALSE)
+
+# Export to CSV as well for convenience
+readr::write_csv(
+  st_drop_geometry(nh_data_complete),
+  sub(".gpkg$", ".csv", output_file_name_complete)
+)
+
+# Clean and summarize data (group by address and network distance)
+nh_data_clean <- nh_data_complete %>%
+  mutate(address = stringr::str_trim(address)) %>%
+  group_by(address, network_distance) %>%
+  summarise(across(everything(), ~ first(.x)), .groups = "drop")
+
+# Pivot data to wide format for easier analysis
+nh_data_wide <- nh_data_clean %>%
+  pivot_wider(
+    id_cols = c(address, geom),
+    names_from = network_distance,
+    values_from = -c(address, network_distance, geom)
+  )
+
+# Export cleaned long and wide formats
+write_sf(nh_data_clean, sub(".gpkg$", "_long_v2-2.gpkg", output_file_name_complete))
+write_sf(nh_data_wide, sub(".gpkg$", "_wide_v2-2.gpkg", output_file_name_complete))
+
+readr::write_csv(
+  st_drop_geometry(nh_data_clean),
+  sub(".gpkg$", "_long_v2-2.csv", output_file_name_complete)
+)
+
+readr::write_csv(
+  st_drop_geometry(nh_data_wide),
+  sub(".gpkg$", "_wide_v2-2.csv", output_file_name_complete)
+)
+```
+
