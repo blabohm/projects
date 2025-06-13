@@ -1,0 +1,71 @@
+---
+title: "walkability tool"
+author: "Benjamin Labohm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# Directories
+projectDir <- "D:/LandOeko/AgeingWell/"
+dataDir <- paste0(projectDir, "data/")
+libDir <- paste0(projectDir, "lib/")
+
+# (Install and) load required packages in / from lib directory
+req_pkg = c("dplyr", "sf")
+# For package installation
+
+req_pkg_install <- setdiff(req_pkg, rownames(installed.packages(lib = libDir)))
+lapply(req_pkg_install, install.packages, character.only = TRUE, lib = libDir)
+lapply(req_pkg, require, character.only = TRUE, lib = libDir)
+```
+
+## Input address raw
+
+```{r Input data}
+# load LOR polygons
+lor_path <- paste0(dataDir, "lor_target_plr.gpkg")
+lor_polygons <- read_sf(lor_path)
+
+# load raw address data
+address_raw <- paste0(dataDir, "address_data_raw/adressen-be_mitPLZ.txt") %>%
+  read.csv2(header = FALSE#, quote = "", 
+            #stringsAsFactors=FALSE, fileEncoding="latin1"
+            ) 
+head(address_raw)
+```
+
+## Transform address to sf
+
+```{r transform to sf}
+# CRS of raw data
+address_raw_crs <- 25833
+
+# Select columns and convert to sf
+address_sf <-
+  address_raw %>% 
+  select(street_name = "V15", house_nr = "V16", house_nr_suffix = "V17",
+         x = "V19", y = "V20") %>%
+  st_as_sf(coords = c("x", "y"),
+           crs = address_raw_crs, 
+           sf_column_name = "geom")
+  
+glimpse(address_sf)
+
+```
+
+## Filter for LORs and export Address data to gpkg
+
+```{r export}
+# Filter
+address_sf_filtered <- st_filter(address_sf, lor_polygons)
+
+write_sf(address_sf_filtered, paste0(dataDir, "address_data.gpkg"),
+         append = FALSE)
+
+plot(address_sf_filtered$geom)
+```
+
+
+
+

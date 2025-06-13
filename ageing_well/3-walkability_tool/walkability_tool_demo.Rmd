@@ -1,0 +1,102 @@
+---
+title: "walkability tool"
+author: "Benjamin Labohm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# Directories
+projectDir <- "D:/LandOeko/AgeingWell/"
+dataDir <- paste0(projectDir, "data/")
+libDir <- paste0(projectDir, "lib/")
+
+# (Install and) load required packages in / from lib directory
+req_pkg = c("dplyr", "tidygeocoder", "terra", "parallel", "sf", "osmdata")
+# For package installation
+
+req_pkg_install <- setdiff(req_pkg, rownames(installed.packages(lib = libDir)))
+lapply(req_pkg_install, install.packages, character.only = TRUE, lib = libDir)
+lapply(req_pkg, require, character.only = TRUE, lib = libDir)
+
+# load functions
+getwd() %>%
+    paste0("/Module 1 - OSM download/1-1_download_OSM.R") %>%
+    #list.files(pattern = "1[A-Za-z].*\\.R", full.names = TRUE) %>%
+    #for (file in .) source(file)
+    source()
+```
+
+## Get address location(s)
+
+```{r get address location}
+# Get the coordinates of the target addresses
+test_address <- "Rudower-Chaussee 16, Berlin"
+locs_sf <- tibble(address = test_address) %>% 
+  geocode(address = address) %>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326) %>% 
+  st_transform(3035)
+locs_sf
+
+```
+
+
+## Input data
+
+```{r Input data}
+vect_input <- \(file_name) read_sf(paste0(dataDir, file_name),
+                                   wkt_filter = loc_wkt_filter)
+rast_input <- \(file_name) crop(rast(paste0(dataDir, file_name)),
+                                loc_wkt_filter) 
+# Buffer distance (to be extracted from sheet)
+d <- 500
+# Target location
+target_loc <- locs_sf$geometry[1]
+loc_wkt_filter <- st_buffer(target_loc, d) %>% 
+  st_as_text()
+target_building <- paste0(dataDir, "buildings.gpkg") %>% 
+  read_sf(wkt_filter = loc_wkt_filter) %>% 
+  slice(st_nearest_feature(target_loc, .))
+target_building_entry <- 
+
+di <- read_sf(paste0(dataDir, "detour_index.gpkg"), 
+              query = paste0("SELECT * FROM detour_index WHERE ID is '", 
+                            target_building$ID, "'"))#$di
+
+edges <- vect_input("network_clean.gpkg")
+ls <- vect_input("local_significance.gpkg")
+tcd18 <- rast_input("tcd2018_berlin.tif")
+
+hc_facilities <- paste("clinic", "doctors", "hospital", sep = "|")
+hc_facilities1 <- paste("dentist", "nursing_home", "pharmacy", sep = "|")
+
+healthcare1 <- OSM_downloader(target_loc, "healthcare", d)$osm_points %>% 
+  filter(!is.na(amenity))
+healthcare2 <- OSM_downloader(target_loc, "amenity", d)$osm_points %>% 
+  filter(!is.na(amenity),
+         grepl(paste(hc_facilities, hc_facilities1, sep = "|"), amenity))
+healthcare <- bind_rows(healthcare1, healthcare2) %>% 
+  select(amenity) %>% 
+  distinct()
+```
+
+## Generate plots
+
+```{r generate plots}
+plot(edges$geom)
+plot(select(ls, -edge_id), add = TRUE)
+```
+
+
+plot(edges$geom)
+
+plot(target_loc, col = "blue")
+
+plot(tcd18)
+plot(target_loc, add = TRUE, col = "blue")
+plot(edges$geom, add = TRUE)
+plot(select(ls, -edge_id), add = TRUE, width = 15)
+plot(target_building$geom, add = TRUE, col = "red")
+plot(select(di, -c(population, ID)), add = TRUE)
+plot(st_transform(healthcare$geometry, 3035), col = "red", add = TRUE)
+

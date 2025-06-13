@@ -1,0 +1,57 @@
+---
+title: "walkability tool"
+author: "Benjamin Labohm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# Directories
+projectDir <- "D:/LandOeko/AgeingWell/"
+dataDir <- paste0(projectDir, "data/")
+libDir <- paste0(projectDir, "lib/")
+
+# (Install and) load required packages in / from lib directory
+req_pkg = c("dplyr", "tidygeocoder", "terra", "parallel", "sf", "osmdata")
+# For package installation
+
+req_pkg_install <- setdiff(req_pkg, rownames(installed.packages(lib = libDir)))
+lapply(req_pkg_install, install.packages, character.only = TRUE, lib = libDir)
+lapply(req_pkg, require, character.only = TRUE, lib = libDir)
+
+```
+
+
+                                
+                                
+## Get paths to input files
+
+```{r get paths}
+# 
+gpkg_paths <- list.files(dataDir, full.names = TRUE, pattern = ".gpkg$")
+old_data_path <- paste0(dataDir, "data_EPSG3035/")
+if(!dir.exists(old_data_path)) dir.create(old_data_path)
+```
+
+
+
+## Reproject
+
+```{r reproject}
+#
+to_crs <- 25833
+
+for (gpkg in gpkg_paths) {
+  to_transform <- read_sf(gpkg)
+  if(st_crs(to_transform) != to_crs) {
+    
+    out_path_old <- gsub(".*data/", old_data_path, gpkg)
+    transformed <- st_transform(to_transform, to_crs) 
+    write_sf(transformed, gpkg, overwrite = TRUE)
+    write_sf(to_transform, out_path_old, overwrite = TRUE)
+    
+  }
+  }
+
+```
+

@@ -1,0 +1,79 @@
+
+---
+title: "osm_download_and_check"
+author: "Benjamin Labohm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Packages
+Loading required packages
+
+```{r dirs and packages, echo=FALSE, message=FALSE}
+# Directories
+projectDir <- "D:/LandOeko/AgeingWell/"
+dataDir <- paste0(projectDir, "data/")
+libDir <- paste0(projectDir, "lib/")
+
+# Package loading
+req_pkg = c("dplyr", "tibble", "tidyr", "sf", "osmdata")
+req_pkg_install <- setdiff(req_pkg, rownames(installed.packages(lib = libDir)))
+lapply(req_pkg_install, install.packages, character.only = TRUE, lib = libDir)
+lapply(req_pkg, require, character.only = TRUE, lib = libDir)
+
+
+```
+
+## Data
+Load input data
+- target LOR
+- target OSM keys
+
+```{r data input}
+# load LOR polygons
+lor_path <- paste0(dataDir, "lor_plr.gpkg")
+lor_polygons <- read_sf(lor_path) %>% st_transform(3035)
+plot(lor_polygons$geom)  
+
+lor_wkt_filter <- lor_polygons$geom %>% st_union() %>% st_as_text()
+di_buildings_sf <- paste0(dataDir, "detour_index.gpkg") %>% read_sf(wkt_filter = lor_wkt_filter) %>% 
+  mutate(max_di = di * 1.2, sum_di = di * 3,
+         avg_ls = rnorm(nrow(.), mean = 250, sd = 125),
+         max_ls = avg_ls * 3.5,
+         n_social = rnorm(nrow(.), mean = 5, sd = 2.5),
+         avg_dist_social = rnorm(nrow(.), mean = 150, sd = 75),
+         n_care = rnorm(nrow(.), mean = 5, sd = 2.5),
+         avg_dist_care = rnorm(nrow(.), mean = 150, sd = 75),
+         n_service = rnorm(nrow(.), mean = 5, sd = 2.5),
+         avg_dist_service = rnorm(nrow(.), mean = 150, sd = 75),
+         n_economic = rnorm(nrow(.), mean = 5, sd = 2.5),
+         avg_dist_economic = rnorm(nrow(.), mean = 150, sd = 75)
+         )
+plot(di_buildings_sf)
+
+osm_buildings <- paste0(dataDir, "osm_buildings.gpkg") %>% read_sf()
+
+output_df <- osm_building_sf %>% 
+  select(-matches("building|amenity")) %>% 
+  rename(street = `addr:street`, 
+         housenumber = `addr:housenumber`,
+         postcode = `addr:postcode`) %>% 
+  st_join(di_buildings_sf) %>%  
+  st_drop_geometry() %>% 
+  group_by(ID) %>% 
+  summarise(across(.fns = \(x) first(x))) %>% 
+  filter(!is.na(housenumber) & !is.na(street))
+glimpse(output_df)
+```
+
+## Download OSM
+Download OSM data in target LOR
+- by LOR
+- by key
+- save raw data as osm_raw.gpkg
+
+```{r}
+# by LOR
+write.csv(output_df, paste0(dataDir, "walkability_dummy_data.csv"), row.names = FALSE)
+
+```

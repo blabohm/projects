@@ -1,0 +1,143 @@
+---
+title: "walkability tool"
+author: "Benjamin Labohm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# Directories
+projectDir <- "D:/LandOeko/AgeingWell/"
+dataDir <- paste0(projectDir, "data/")
+libDir <- paste0(projectDir, "lib/")
+
+# (Install and) load required packages in / from lib directory
+req_pkg = c("dplyr", "tidygeocoder", "terra", "parallel", "sf", "osmdata")
+# For package installation
+
+req_pkg_install <- setdiff(req_pkg, rownames(installed.packages(lib = libDir)))
+lapply(req_pkg_install, install.packages, character.only = TRUE, lib = libDir)
+lapply(req_pkg, require, character.only = TRUE, lib = libDir)
+
+
+vect_input_wkt <- \(file_name, loc_filter) read_sf(file_name,
+                                       wkt_filter = loc_filter)
+vect_input_sql <- function(file_name, 
+                    optional_statement = NULL) {
+  read_sf(file_name, 
+          query = paste("SELECT * FROM", 
+                        st_layers(file_name)$name[1], 
+                        optional_statement))
+}
+
+```
+
+
+                                
+                                
+## Get paths to input files
+
+```{r get paths}
+# LOR
+lor_sf <- paste0(dataDir, "lor_plr.gpkg") %>% read_sf() #%>% 
+  last()
+
+
+# 
+osm_network_path <- paste0(dataDir, "osm_network_clean.gpkg")
+osm_buildings_path <- paste0(dataDir, "osm_residential_buildings_addresses.gpkg")
+osm_pois_path <- paste0(dataDir, "osm_poi_dim.gpkg")
+local_significance_path <- paste0(dataDir, "local_significance.gpkg")
+detour_index_path <- paste0(dataDir, "detour_index.gpkg")
+tcd18_path <- paste0(dataDir, "tcd2018_berlin.tif")
+green_space_entry_path <- paste0(dataDir, "green_space_entries.gpkg")
+
+
+```
+
+
+## Input data
+
+```{r Input data}
+#
+
+
+# Target location and filters
+target_loc <- st_geometry(lor_sf) %>% st_union()
+
+loc_wkt_filter <- st_as_text(target_loc)
+
+osm_buildings <- 
+  vect_input_wkt(osm_buildings_path, loc_wkt_filter) %>% 
+  mutate(address = paste(street_name, house_nr, house_nr_suffix)) %>% 
+  #filter(address == "Allee der Kosmonauten 101 ") %>% 
+  filter(!st_is_empty(geom)) %>% 
+  group_by(address) %>%
+  summarise(geom = st_union(geom))
+
+# Data
+osm_pois <- vect_input_wkt(osm_pois_path, loc_wkt_filter)
+di <- vect_input_wkt(detour_index_path, st_as_text(st_buffer(target_loc, 1)))
+edges <- vect_input_wkt(osm_network_path, loc_wkt_filter)
+ls <- vect_input_wkt(local_significance_path, loc_wkt_filter)
+green_space_entries <- read_sf(green_space_entry_path) %>% 
+  st_transform(25833) %>% 
+  st_filter(lor_sf)
+
+
+```
+
+
+## Get params
+
+```{r get params}
+# Join data to edges
+# -> ls
+
+# for tcd, temp etc:
+#file_name <- tcd18_path
+rast_input <- function(file_name, edges)
+{  
+  rast_raw <- rast(file_name)
+  edges_trans <- st_transform(edges, st_crs(rast_raw))
+  rast_crop <- crop(rast_raw, st_bbox(edges_trans))
+  rast_extr <- terra::extract(rast_crop, edges_trans, 
+                              touches = TRUE,
+                              bind = TRUE)
+  #rast_masked <- mask(rast_raw, edges_trans)
+
+}
+# take edges, transform to raster crs, mask raster with edges,
+# join to edges by edge id?
+
+```
+
+
+## Get distances
+
+```{r get distances}
+# Join node data
+d <- 300
+# POIs, park entries, ...
+osm_poi_buffer <- st_buffer(osm_pois, d) %>% 
+  select(Dimension)
+gse_buffer <- green_space_entries %>% 
+  st_buffer(d) %>% 
+  group_by(identifier) %>% 
+  mutate(geom = st_union(geom))
+  
+# calc distances
+
+
+# gather params on the way?
+poi_count <- osm_buildings %>% 
+  st_join(osm_poi_buffer) %>% 
+  st_drop_geometry() %>% 
+  group_by(address, Dimension) %>% 
+  summarise(dim_count = n()) %>% 
+  tidyr::pivot_wider(names_from = Dimension, values_from = dim_count) %>% 
+  select(-"NA")
+
+left_join(osm_buildings, poi_count) %>% 
+  write_sf(paste0(dataDir, "osm_poi_count.gpkg"), overwrite = TRUE)
+```

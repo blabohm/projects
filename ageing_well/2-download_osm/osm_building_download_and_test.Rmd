@@ -1,0 +1,157 @@
+
+---
+title: "osm_download_and_check"
+author: "Benjamin Labohm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Packages
+Loading required packages
+
+```{r dirs and packages, echo=FALSE, message=FALSE}
+# Directories
+projectDir <- "D:/seafiles_new/Mycloud/AgeingWell_data/"
+dataDir <- paste0(projectDir, "data/")
+libDir <- paste0(projectDir, "lib/")
+
+# Package loading
+req_pkg = c("dplyr", "tibble", "tidyr", "sf", "osmdata")
+req_pkg_install <- setdiff(req_pkg, rownames(installed.packages(lib = libDir)))
+lapply(req_pkg_install, install.packages, character.only = TRUE, lib = libDir)
+lapply(req_pkg, require, character.only = TRUE, lib = libDir)
+
+# load functions
+getwd() %>%
+    paste0("/osm_download_funs.R") %>%
+    source()
+
+```
+
+## Data
+Load input data
+- target LOR
+- target OSM keys
+
+```{r data input}
+# load LOR polygons
+lor_path <- paste0(dataDir, "lor_target_plr.gpkg")
+lor_polygons <- read_sf(lor_path)
+plot(lor_polygons$geom)  
+urban_atlas_residential <- UAresLoader(ua_path = paste0(dataDir, "DE001L1_BERLIN_UA2018_v013.gpkg"), 
+            boundary = st_union(lor_polygons$geom)) %>% 
+  st_transform(st_crs(lor_polygons))
+```
+
+## Download OSM
+Download OSM data in target LOR
+- by LOR
+- by key
+- save raw data as osm_raw.gpkg
+
+```{r download OSM}
+# by LOR
+# i <- 1
+# key <- target_keys[2]
+
+# Path for saving raw OSM data
+osm_raw_dir <- paste0(dataDir, "osm_building_raw/")
+osm_raw_dir <- paste0(dataDir, "osm_building_raw1/")
+d <- 1e3
+clean_dir_create(osm_raw_dir)
+
+keys <- paste(#"addr:street", "addr:housenumber", "addr:postcode", 
+              "^amenity$", "^building$",# "entrance", 
+              sep = "|")
+
+for (i in 1:nrow(lor_polygons)) {
+
+  target_lor <- lor_polygons[i,]
+  osm_raw_path <- paste0(osm_raw_dir, target_lor$PLR_NAME, ".gpkg")
+  osm_data_tmp <- OSM_downloader(loc = target_lor, key = "building", d = d)
+  
+    osm_data_tmp$osm_polygons %>% 
+    select(matches(keys)) %>% 
+    filter(if_any(-geometry, ~ !is.na(.x))) %>% 
+    write_sf(osm_raw_path, append = FALSE)
+  
+}
+  
+```
+
+## Filter OSM
+- filter for values
+- save filtered data as osm_clean.gpkg
+
+```{r filter for LOR}
+# list files in osm raw directory
+osm_raw_paths <- list.files(osm_raw_dir, full.names = TRUE)
+osm_clean_dir <- paste0(dataDir, "osm_buildings_spat_filter/")
+clean_dir_create(osm_clean_dir)
+
+# filter files spatially and by values
+# lor_name <- lor_polygons$BZR_NAME[1]
+
+for (lor_name in lor_polygons$PLR_NAME) {
+  
+  lor_polygon <- filter(lor_polygons, PLR_NAME == lor_name)
+  grep(lor_name, osm_raw_paths, value = TRUE) %>%
+    read_sf() %>% 
+    st_transform(st_crs(lor_polygon)) %>% 
+    st_filter(lor_polygon) %>% 
+    write_sf(paste0(osm_clean_dir, lor_name, ".gpkg"), 
+             append = FALSE)
+    
+}
+```
+
+## Test
+Inspect OSM data for completeness 
+- how many 'highways' have smoothness / surface params?
+- [https://dashboard.ohsome.org]
+
+```{r filter for UA residential}
+# retrieve all OSM keys in study area
+osm_spat_filter_paths <- list.files(osm_clean_dir, full.names = TRUE) 
+osm_building_sf <- osm_spat_filter_paths[1] %>% 
+  read_sf() 
+for (osm_sf_path in osm_spat_filter_paths[2:length(osm_spat_filter_paths)]) {
+  
+  osm_building_sf <- osm_sf_path %>% 
+    read_sf() %>% 
+    bind_rows(osm_building_sf)
+  
+}
+
+# classify OSM data into groups with osm key df
+osm_building_sf %>% 
+  st_filter(urban_atlas_residential) %>% 
+  write_sf(paste0(dataDir, "osm_buildings_UA_residential_filtered.gpkg"), append = FALSE)
+```
+
+
+## Join OSM with addresses
+
+```{r join address}
+# read addresses
+address_sf <- 
+  paste0(dataDir, "address_data.gpkg") %>% 
+  read_sf()
+
+# read_ filtered osm building data
+osm_building_sf_filtered <- 
+  read_sf(paste0(dataDir, "osm_buildings_UA_residential_filtered.gpkg")) %>% 
+  select(matches(keys))
+
+osm_address_join <- st_join(osm_building_sf_filtered, address_sf)
+
+# Joind building polygons with address data and union them by address
+osm_address_join %>% 
+  filter(!is.na(street_name)) %>%
+  mutate(address = paste(street_name, house_nr, house_nr_suffix)) %>% 
+  group_by(address) %>% 
+  summarise(geom = st_union(geom)) %>% 
+  write_sf(paste0(dataDir, "_osm_residential_buildings_addresses.gpkg"),
+           append = FALSE)
+```
+
